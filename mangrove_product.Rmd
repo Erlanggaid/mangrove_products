@@ -1,0 +1,207 @@
+---
+title: "Mangrove Products"
+author: "Erlangga"
+date: "2025-10-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(readr)
+library(dplyr)
+library(sf)
+library(leaflet)
+library(htmltools)
+library(RColorBrewer)
+library(stringr)
+library(purrr)
+
+# Load the CSV data
+df <- read_csv("mangrove_products.csv")
+
+# Filter out rows with missing lat-long and convert to sf object
+df_sf <- df %>%
+  filter(!is.na(Latitude), !is.na(Longitude), !is.na(Location)) %>%
+  st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326, remove = FALSE)
+
+# Group data by Location and Product Types (Category), then aggregate sellers and products for popup
+df_grouped <- df_sf %>%
+  group_by(Location, Latitude, Longitude) %>%
+  summarise(
+    popup_info = {
+      category_groups <- group_split(cur_data(), `Product Types`)
+      popup_strings <- map_chr(category_groups, function(cat_df) {
+        category_name <- unique(cat_df$`Product Types`)
+        sellers_info <- cat_df %>%
+          group_by(Seller) %>%
+          summarise(
+            products = str_c(`Product Name`, collapse = ", "),
+            links = str_c(
+              "<a href='", Link, "' target='_blank'>Link</a>",
+              collapse = ", "
+            ),
+            .groups = "drop"
+          )
+        # Create the rows for sellers in this category
+        sellers_rows <- str_c(
+          "<tr><td>", sellers_info$Seller, "</td><td>", sellers_info$products, "</td><td>", sellers_info$links, "</td></tr>",
+          collapse = ""
+        )
+        # Wrap rows in a table with category heading
+        str_c("<strong>Category: </strong>", category_name,
+          "<table border='1' style='border-collapse:collapse; width:100%; font-size:12px;'>",
+          "<thead><tr><th>Seller</th><th>Products</th><th>Links</th></tr></thead>",
+          "<tbody>", sellers_rows, "</tbody></table><br>")
+      })
+      str_c(popup_strings, collapse = "")
+    },
+    product_type_for_color = first(`Product Types`),
+    .groups = "drop"
+  ) %>%
+  st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326, remove = FALSE)
+
+# Define custom colors for specific product types including 'Others'
+custom_colors <- c(
+  "Cosmetics" = "#E7298A", 
+  "Food products" = "#FF7F00", 
+  "Textile" = "#6A3D9A", 
+  "Others" = "#B1A866"
+)
+
+# Get unique product types
+product_types <- unique(df_sf$`Product Types`)
+
+# Generate default colors (large enough palette)
+default_colors <- colorRampPalette(brewer.pal(12, "Set3"))(length(product_types))
+
+# Map colors: use custom colors if defined, else default colors
+mapped_colors <- sapply(product_types, function(pt) {
+  if (pt %in% names(custom_colors)) {
+    custom_colors[[pt]]
+  } else {
+    default_colors[(which(product_types == pt) - 1) %% length(default_colors) + 1]
+  }
+})
+
+# Create color factor function for mapping colors to product types
+colors <- colorFactor(palette = mapped_colors, domain = product_types)
+
+# Create the leaflet map
+map <- leaflet(df_grouped) %>%
+  addTiles() %>%
+  addCircleMarkers(radius = 7,
+                   color = ~colors(product_type_for_color),
+                   stroke = FALSE, fillOpacity = 0.8,
+                   popup = ~popup_info) %>%
+  addMouseCoordinates() %>%
+  addMiniMap(tiles = providers$OpenStreetMap, position = "bottomleft") %>%
+  addLegend("bottomright", pal = colors, values = product_types,
+            title = "Product Types", opacity = 1)
+
+# Render the map with smaller legend text style
+htmltools::browsable(
+  htmltools::tagList(
+    htmltools::tags$style(HTML(
+      ".leaflet .legend { font-size: 8px; line-height: 10px; }"
+    )),
+    map
+  )
+)
+
+
+library(htmlwidgets)
+
+# Assuming your leaflet map object is named 'map'
+saveWidget(map,
+           file = "index.html",
+           selfcontained = T,
+           libdir = "mangrove_products_only")
+
+
+```
+
+```{r}
+# Only install if not already available
+if (!require("maps")) install.packages("maps")
+library(maps)
+
+# Load data
+mangrove_products <- read.csv("mangrove_products.csv")
+
+# Define map boundaries
+min_lon <- 90
+max_lon <- 150
+min_lat <- -15
+max_lat <- 15
+
+# Open PDF device to save output
+pdf("mangrove_products_map_updated.pdf", width = 10, height = 7)
+
+# Save old plotting settings
+old_par <- par(no.readonly = TRUE)
+
+# Use exact axis limits with no expansion padding
+par(xaxs = "i", yaxs = "i")
+
+# Plot blank with ocean fill blue exactly within axis limits
+plot(NA, xlim = c(min_lon, max_lon), ylim = c(min_lat, max_lat),
+     type = "n", xlab = "", ylab = "", axes = FALSE)
+rect(min_lon, min_lat, max_lon, max_lat, col = "lightblue", border = NA)
+
+# Plot land polygons filled grey on top
+map("world", xlim = c(min_lon, max_lon), ylim = c(min_lat, max_lat),
+    col = "grey85", fill = TRUE, add = TRUE)
+
+# Add grid lines every 4 degrees
+abline(v = seq(min_lon, max_lon, by = 4), col = "grey70", lty = 3)
+abline(h = seq(min_lat, max_lat, by = 4), col = "grey70", lty = 3)
+
+# Draw axes with tick labels every 4 degrees
+axis(1, at = seq(min_lon, max_lon, by = 4),
+     labels = paste0(seq(min_lon, max_lon, by = 4), "°E"), cex.axis = 0.7)
+axis(2, at = seq(min_lat, max_lat, by = 4),
+     labels = paste0(abs(seq(min_lat, max_lat, by = 4)),
+                     ifelse(seq(min_lat, max_lat, by = 4) < 0, "°S", "°N")),
+     cex.axis = 0.7)
+
+# Define point colors by product type
+product_colors <- c(
+  "Cosmetics" = "#008000",     # green
+  "Food products" = "#0000FF", # blue
+  "Textile" = "#FFA500",       # orange
+  "Others" = "#800080"         # purple
+)
+pt_colors <- product_colors[as.character(mangrove_products$Product.Types)]
+
+# Plot mangrove product points
+points(mangrove_products$Longitude, mangrove_products$Latitude,
+       pch = 21, bg = pt_colors, col = pt_colors, cex = 1.5)
+
+# Add legend with white background at bottom right
+legend("bottomright",
+       legend = names(product_colors),
+       pt.bg = product_colors,
+       pch = 21, col = "black", cex = 0.8,
+       bg = "white")
+
+# Add scale bar at bottom left
+scalebar_length <- 200
+scalebar_x <- min_lon + 1
+scalebar_y <- min_lat + 1
+rect(scalebar_x, scalebar_y, scalebar_x + 2, scalebar_y + 0.2, col = "black")
+text(scalebar_x + 1, scalebar_y - 0.5, paste0(scalebar_length, " km"),
+     adj = 0.3, cex = 0.5)
+
+# Add north arrow (top right) without overlap
+north_x <- max_lon - 1
+north_N_y <- max_lat - 0.8
+text(north_x, north_N_y, "N", cex = 0.7, font = 12)
+
+
+
+```
+
